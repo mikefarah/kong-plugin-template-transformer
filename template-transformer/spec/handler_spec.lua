@@ -4,6 +4,7 @@ local mock_query_args = "query_args"
 local mock_req_headers =  { my_cool_header = "cool_header" }
 local mock_resp_headers = { ['Content-Type'] = "application/json; charset=utf-8" }
 local mock_router_matches = { group_one = "test_match" }
+local cjson_encode = require('cjson').encode
 
 local ngx =  {
     req = {
@@ -148,6 +149,15 @@ describe("Test TemplateTransformerHandler access", function()
     mock_query_args = query_args
   end)
 
+  it("should build the request body when wrapping the original body", function()
+    TemplateTransformerHandler:new()
+    local config = {
+        request_template = '{ "wrapped": {{ raw_body }} }'
+    }
+    TemplateTransformerHandler:access(config)
+    assert.spy(ngx.req.set_body_data).was_called_with('{ "wrapped": { "data": "payload_data" } }')
+  end)
+
   it("should build the request body without error when header is missing", function()
     local old_headers = mock_req_headers
     mock_req_headers = {}
@@ -218,6 +228,39 @@ describe("Test TemplateTransformerHandler body_filter", function()
     _G.ngx.arg = {'{ "key" : "value" }', true}
     TemplateTransformerHandler:body_filter(config)
     assert.equal(config.response_template, ngx.arg[1])
+  end)
+
+  it("should set first ngx arg to template when using raw_body in the template", function()
+    TemplateTransformerHandler:new()
+    local config = {
+        response_template = "{ \"wrapper\": {{ raw_body }} }"
+    }
+    _G.ngx.ctx.buffer = '{ "name": "fred" }'
+    TemplateTransformerHandler:body_filter(config)
+    assert.equal("{ \"wrapper\": { \"name\": \"fred\" } }", ngx.arg[1])
+  end)
+
+  it("Should return string with scaped quotes", function()
+    TemplateTransformerHandler:new()
+    local userName = cjson_encode('Frango "Contudo" Dentro')
+    local config = {
+      response_template = "{{ raw_body }}"
+    }
+    _G.ngx.ctx.buffer = '{ "name": '..userName..' }'
+    _G.ngx.arg = {'{ "key" : "value" }', true}
+    TemplateTransformerHandler:body_filter(config)
+    assert.equal("{ \"name\": \"Frango \\\"Contudo\\\" Dentro\" }", ngx.arg[1])
+  end)
+
+  it("lets you include json on the fly", function()
+    TemplateTransformerHandler:new()
+    local config = {
+        response_template = "{% local cjson_encode = require('cjson').encode  %} { \"template\": {{cjson_encode(body.thing)}} }"
+    }
+    _G.ngx.ctx.buffer = '{ "thing"  : {"name": "sent"} }'
+    _G.ngx.arg = {'{ "key" : "value" }', true}
+    TemplateTransformerHandler:body_filter(config)
+    assert.equal('{"template":{"name":"sent"}}', ngx.arg[1]:gsub("%s+", ""))
   end)
 
   it("should pass status code to template", function()

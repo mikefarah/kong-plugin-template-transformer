@@ -19,6 +19,8 @@ local utils = require 'kong.plugins.kong-plugin-template-transformer.utils'
 
 function read_json_body(body)
   if body and body ~= "" then
+    body = gsub(body, [[\"]], [[&__escaped__quot;]])
+    ngx.log(ngx.ERR, body)
     local status, res = pcall(cjson_decode, body)
 
     if status then
@@ -45,6 +47,7 @@ function prepare_body(string_body)
   v = gsub(v, "&lt;", "<")
   v = gsub(v, "&gt;", ">")
   v = gsub(v, "&quot;", "\"")
+  v = gsub(v, "&__escaped__quot;", '\\\"')
   v = gsub(v, "&#39;", "\'")
   v = gsub(v, "&#47;", "/")
   v = gsub(v, "/;", "/")
@@ -60,11 +63,13 @@ function TemplateTransformerHandler:access(config)
   TemplateTransformerHandler.super.access(self)
   if config.request_template and config.request_template ~= "" then
     local body = nil
+    local raw_body = nil
 
     req_read_body()
     local string_body = req_get_body_data()
     if string_body then
-      body = cjson_decode(prepare_body(string_body))
+      raw_body = prepare_body(string_body)
+      body = cjson_decode(raw_body)
     end
 
     local headers = req_get_headers()
@@ -74,6 +79,7 @@ function TemplateTransformerHandler:access(config)
     local transformed_body = template_transformer.get_template(config.request_template){query_string = query_string,
                                                                                         headers = headers,
                                                                                         body = body,
+                                                                                        raw_body = raw_body,
                                                                                         custom_data = ngx.ctx.custom_data,
                                                                                         route_groups = router_matches.uri_captures}
     transformed_body = prepare_body(transformed_body)
@@ -114,16 +120,21 @@ function TemplateTransformerHandler:body_filter(config)
     else
       -- body is fully read
       local headers = res_get_headers()
-      local body = read_json_body(ngx.ctx.buffer)
+      local raw_body = ngx.ctx.buffer
+      local body = read_json_body(raw_body)
       if body == nil then
         return ngx.ERROR
       end
       local transformed_body = template_transformer.get_template(config.response_template){headers = headers,
                                                                                            body = body,
+                                                                                           raw_body = raw_body,
                                                                                            status = ngx.status}
-      ngx.arg[1] = prepare_body(cjson_encode(transformed_body))
+      
+      local transformed_body_json = prepare_body(transformed_body); 
+      
+      ngx.arg[1] = transformed_body_json
 
-      local json_transformed_body = cjson_decode(transformed_body)
+      local json_transformed_body = cjson_decode(transformed_body_json)
       utils.hide_fields(json_transformed_body, config.hidden_fields)
 
       ngx.log(ngx.DEBUG, string.format("Transformed Body :: %s", cjson_encode(json_transformed_body)))
